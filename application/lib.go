@@ -5,6 +5,7 @@ import (
         "crypto/rsa"
         "crypto/tls"
         "flag"
+	"io"
         "net/http"
 	"fmt"
         "strings"
@@ -19,20 +20,39 @@ type Header struct {
         KeyID string `json:"kid,omitempty"`
 }
 
-func combine(nonce string) {
+type dummyNonceSource struct{}
+
+func (n dummyNonceSource) Nonce() (string, error) {
+        tr := &http.Transport{
+                TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+        }
+        client := &http.Client{Transport: tr}
+
+        res, err := client.Head("https://localhost:14000/nonce-plz")
+        if err != nil {
+                panic(err)
+        }
+        ua := res.Header.Get("Replay-Nonce")
+        return ua, nil
+}
+
+func combine() {
         privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
         if err != nil {
                 panic(err)
         }
 
-	var signerOpts = jose.SignerOptions{}
-	signerOpts.WithHeader("Nonce", nonce)
-        signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.PS512, Key: privateKey}, &signerOpts)
+	var signerOpts = jose.SignerOptions{ NonceSource: dummyNonceSource{}}
+	signerOpts.WithHeader("jwk", jose.JSONWebKey{Key: privateKey.Public()})
+	signerOpts.WithHeader("url", "https://localhost:14000/sign-me-up")
+        signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: privateKey}, &signerOpts)
         if err != nil {
                 panic(err)
         }
 
-	payload := map[string]interface{}{"termsOfServiceAgreed":true, "contact": "mailto:cert-admin@example.org"}
+	var testor [1]string
+	testor[0] = "mailto:test.test@test.de"
+	payload := map[string]interface{}{"termsOfServiceAgreed":true, "contact": testor}
 	byts, _ := json.Marshal(payload)
 	fmt.Println(string(byts)) 
         signer.Options()
@@ -61,5 +81,6 @@ func combine(nonce string) {
         }
         defer resp.Body.Close()
         println("HTTP result status: ", resp.Status)
-        println("HTTP result body: ", resp.Body)
+	body, err := io.ReadAll(resp.Body)
+        println("HTTP result body: ", string(body))
 }
